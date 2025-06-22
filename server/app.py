@@ -1,83 +1,99 @@
-from flask import Flask, request, make_response
+from flask import Flask, request, make_response, jsonify
 from flask_migrate import Migrate
-from flask_restful import Api, Resource
-
-from models import db, Newsletter
+from flask_cors import CORS
+from models import db, Message # Import your Message model
+from datetime import datetime # Import datetime for potential error messages
 
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///newsletters.db'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///app.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.json.compact = False
+app.json.compact = False # For pretty JSON output (more readable in browser/Postman)
+
+CORS(app) # Enable CORS for your app
 
 migrate = Migrate(app, db)
+
 db.init_app(app)
 
-api = Api(app)
+@app.route('/')
+def index():
+    return '<h1>Chatterbox API</h1>'
 
-class Home(Resource):
+# --- Message Routes ---
 
-    def get(self):
+@app.route('/messages', methods=['GET'])
+def get_messages():
+    # GET /messages: returns an array of all messages as JSON,
+    # ordered by created_at in ascending order.
+    messages = Message.query.order_by(Message.created_at.asc()).all()
+    # Using serialize() from SerializerMixin to convert objects to dictionaries
+    messages_dict = [message.to_dict() for message in messages]
+    return make_response(jsonify(messages_dict), 200)
 
-        response_dict = {
-            "message": "Welcome to the Newsletter RESTful API",
-        }
+@app.route('/messages', methods=['POST'])
+def create_message():
+    # POST /messages: creates a new message with a body and username from params,
+    # and returns the newly created post as JSON.
+    data = request.get_json()
 
-        response = make_response(
-            response_dict,
-            200
+    if not data:
+        return make_response(jsonify({"errors": ["No data provided in request body"]}), 400)
+
+    try:
+        new_message = Message(
+            body=data.get('body'),
+            username=data.get('username')
+            # created_at and updated_at will be set by default
         )
-
-        return response
-
-api.add_resource(Home, '/')
-
-class Newsletters(Resource):
-
-    def get(self):
-
-        response_dict_list = [n.to_dict() for n in Newsletter.query.all()]
-
-        response = make_response(
-            response_dict_list,
-            200,
-        )
-
-        return response
-
-    def post(self):
-        new_record = Newsletter(
-            title=request.form['title'],
-            body=request.form['body'],
-        )
-
-        db.session.add(new_record)
+        db.session.add(new_message)
         db.session.commit()
+        return make_response(jsonify(new_message.to_dict()), 201) # 201 Created
+    except Exception as e:
+        db.session.rollback() # Rollback in case of an error
+        return make_response(jsonify({"errors": [str(e)]}), 400) # 400 Bad Request if data is missing/invalid
 
-        response_dict = new_record.to_dict()
+@app.route('/messages/<int:id>', methods=['PATCH'])
+def update_message(id):
+    # PATCH /messages/<int:id>: updates the body of the message using params,
+    # and returns the updated message as JSON.
+    message = Message.query.get(id)
 
-        response = make_response(
-            response_dict,
-            201,
-        )
+    if not message:
+        return make_response(jsonify({"error": "Message not found"}), 404) # 404 Not Found
 
-        return response
+    data = request.get_json()
+    if not data:
+        return make_response(jsonify({"errors": ["No data provided for update"]}), 400)
 
-api.add_resource(Newsletters, '/newsletters')
+    try:
+        # Only update the 'body' as per instructions
+        if 'body' in data:
+            message.body = data['body']
+        # updated_at will be automatically updated by the onupdate argument in the model
 
-class NewsletterByID(Resource):
+        db.session.add(message) # Add to session for update tracking
+        db.session.commit()
+        return make_response(jsonify(message.to_dict()), 200) # 200 OK
+    except Exception as e:
+        db.session.rollback()
+        return make_response(jsonify({"errors": [str(e)]}), 400)
 
-    def get(self, id):
+@app.route('/messages/<int:id>', methods=['DELETE'])
+def delete_message(id):
+    # DELETE /messages/<int:id>: deletes the message from the database.
+    message = Message.query.get(id)
 
-        response_dict = Newsletter.query.filter_by(id=id).first().to_dict()
+    if not message:
+        return make_response(jsonify({"error": "Message not found"}), 404) # 404 Not Found
 
-        response = make_response(
-            response_dict,
-            200,
-        )
+    try:
+        db.session.delete(message)
+        db.session.commit()
+        return make_response(jsonify({}), 204) # 204 No Content for successful deletion
+    except Exception as e:
+        db.session.rollback()
+        return make_response(jsonify({"errors": [str(e)]}), 500) # 500 Internal Server Error for unexpected issues
 
-        return response
-
-api.add_resource(NewsletterByID, '/newsletters/<int:id>')
 
 if __name__ == '__main__':
-    app.run(port=5555, debug=True)
+    app.run(port=5000, debug=True)
